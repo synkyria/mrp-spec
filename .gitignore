@@ -17,3 +17,7 @@ pack_current
 
 # Temp
 *.bak
+
+# backups
+*.bak
+*.bak.*
