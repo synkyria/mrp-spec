@@ -1,0 +1,19 @@
+# OS noise
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Evidence packs (keep out of git)
+packs/
+pack_current
+
+# Large artifacts / zips
+*.zip
+*.zip.sha256
+
+# Temp
+*.bak

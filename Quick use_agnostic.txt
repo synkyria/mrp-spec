@@ -1,0 +1,5 @@
+chmod +x make_mrp_pack.sh
+python3 validate_mrp.py --pack .
+# ή:
+./make_mrp_pack.sh ./some_evidence_dir ./MRP_pack_example
+python3 validate_mrp.py --pack ./MRP_pack_example

@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse, json, hashlib
+from pathlib import Path
+from typing import Any, Optional
+
+ACTIONS = {"ACCEPT","HOLD","REFUSE","DROP"}
+
+def get_nested(d: Any, path: list[str]) -> Any:
+    cur: Any = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    return cur
+
+def _as_action(x: Any) -> Optional[str]:
+    if isinstance(x, str) and x.strip():
+        return x.strip().upper()
+    return None
+
+def infer_action(fr: dict) -> Optional[str]:
+    """
+    Tries hard to recover action from multiple legacy layouts:
+    - action_type: "ACCEPT"
+    - action: "ACCEPT"
+    - action: {"type":"ACCEPT"} or {"action":"ACCEPT"} or {"name":"ACCEPT"}
+    - decision: {"action":"ACCEPT"} / {"decision":"ACCEPT"} / {"type":"ACCEPT"}
+    - decision.action.type etc
+    """
+    # 1) canonical / simple legacy
+    for cand in [
+        fr.get("action_type"),
+        fr.get("action"),
+        get_nested(fr, ["decision","action"]),
+        get_nested(fr, ["decision","decision"]),
+        get_nested(fr, ["decision","type"]),
+        fr.get("decision_type"),
+    ]:
+        a = _as_action(cand)
+        if a:
+            return a
+
+    # 2) action as dict
+    aobj = fr.get("action")
+    if isinstance(aobj, dict):
+        for k in ("type","action","name","decision","kind"):
+            a = _as_action(aobj.get(k))
+            if a:
+                return a
+        # deeper common patterns
+        for cand in [
+            get_nested(aobj, ["action","type"]),
+            get_nested(aobj, ["decision","type"]),
+            get_nested(aobj, ["meta","type"]),
+        ]:
+            a = _as_action(cand)
+            if a:
+                return a
+
+    # 3) decision as dict with nested action dict
+    dobj = fr.get("decision")
+    if isinstance(dobj, dict):
+        # direct fields
+        for k in ("action","decision","type","name","kind"):
+            a = _as_action(dobj.get(k))
+            if a:
+                return a
+        # nested action dict
+        act = dobj.get("action")
+        if isinstance(act, dict):
+            for k in ("type","action","name","decision","kind"):
+                a = _as_action(act.get(k))
+                if a:
+                    return a
+        # deeper
+        for cand in [
+            get_nested(dobj, ["action","type"]),
+            get_nested(dobj, ["action","name"]),
+            get_nested(dobj, ["meta","action"]),
+            get_nested(dobj, ["meta","type"]),
+        ]:
+            a = _as_action(cand)
+            if a:
+                return a
+
+    return None
+
+def infer_reason(fr: dict, action: str) -> str:
+    r = fr.get("reason_code")
+    if isinstance(r, str) and r.strip():
+        return r.strip()
+
+    for cand in [
+        fr.get("action_reason"),
+        get_nested(fr, ["decision","reason"]),
+        fr.get("reason"),
+        get_nested(fr, ["decision","action_reason"]),
+    ]:
+        if isinstance(cand, str) and cand.strip():
+            return cand.strip()
+
+    return {
+        "ACCEPT":"ok",
+        "HOLD":"hold",
+        "REFUSE":"refuse",
+        "DROP":"drop",
+    }.get(action, "unknown")
+
+def ensure_witness(fr: dict, action: str, reason_code: str) -> None:
+    if action not in {"HOLD","REFUSE"}:
+        return
+
+    w = fr.get("witness")
+    if not isinstance(w, dict):
+        w = {}
+
+    tid = w.get("threshold_id")
+    if not (isinstance(tid, str) and tid.strip()):
+        tid = (
+            fr.get("threshold_id")
+            or fr.get("threshold")
+            or get_nested(fr, ["decision","threshold_id"])
+            or get_nested(fr, ["decision","threshold"])
+            or reason_code
+        )
+        if not isinstance(tid, str):
+            tid = str(tid)
+        w["threshold_id"] = tid
+
+    wv = w.get("witness_value")
+    if wv is None:
+        wv = (
+            fr.get("witness_value")
+            or fr.get("threshold_value")
+            or get_nested(fr, ["decision","witness_value"])
+            or get_nested(fr, ["decision","threshold_value"])
+        )
+        if wv is None:
+            wv = 1
+        w["witness_value"] = wv
+
+    fr["witness"] = w
+
+def write_checksums(pack: Path) -> None:
+    cs = pack / "checksums.sha256"
+    lines = []
+    for fp in sorted(pack.rglob("*")):
+        if not fp.is_file():
+            continue
+        if fp.name in {".DS_Store", "checksums.sha256"}:
+            continue
+        h = hashlib.sha256(fp.read_bytes()).hexdigest()
+        rel = fp.relative_to(pack).as_posix()
+        lines.append(f"{h}  {rel}")
+    cs.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pack", required=True, help="Pack dir (contains frames.jsonl)")
+    ap.add_argument("--inplace", action="store_true", help="Rewrite frames.jsonl + checksums in place")
+    ap.add_argument("--fix-manifest-policies", action="store_true", help="Set manifest.experiment.policies from frames")
+    args = ap.parse_args()
+
+    pack = Path(args.pack).resolve()
+    fp = pack / "frames.jsonl"
+    mp = pack / "manifest.json"
+    if not fp.exists():
+        raise SystemExit(f"Missing {fp}")
+    if not mp.exists():
+        raise SystemExit(f"Missing {mp}")
+
+    out_lines = []
+    changed_action = 0
+    changed_reason = 0
+    changed_witness = 0
+
+    policies_seen = set()
+
+    for line in fp.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        fr = json.loads(line)
+
+        pol = fr.get("policy")
+        if isinstance(pol, str) and pol.strip():
+            policies_seen.add(pol.strip())
+
+        action = infer_action(fr) or fr.get("action_type") or "UNKNOWN"
+        if isinstance(action, str):
+            action = action.strip().upper()
+        else:
+            action = "UNKNOWN"
+
+        if action != fr.get("action_type"):
+            fr["action_type"] = action
+            changed_action += 1
+
+        reason = infer_reason(fr, action)
+        if reason != fr.get("reason_code"):
+            fr["reason_code"] = reason
+            changed_reason += 1
+
+        before_w = fr.get("witness")
+        ensure_witness(fr, action, reason)
+        after_w = fr.get("witness")
+        if action in {"HOLD","REFUSE"} and before_w != after_w:
+            changed_witness += 1
+
+        out_lines.append(json.dumps(fr, ensure_ascii=False))
+
+    out_text = "\n".join(out_lines) + "\n"
+
+    if args.inplace:
+        fp.write_text(out_text, encoding="utf-8")
+
+        if args.fix_manifest_policies:
+            man = json.loads(mp.read_text(encoding="utf-8"))
+            exp = man.get("experiment")
+            if not isinstance(exp, dict):
+                exp = {}
+                man["experiment"] = exp
+            exp["policies"] = sorted(policies_seen) if policies_seen else exp.get("policies", [])
+            mp.write_text(json.dumps(man, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        write_checksums(pack)
+        print(f"OK: normalised {pack}")
+        print(f"  action_type filled/overwritten: {changed_action}")
+        print(f"  reason_code filled/overwritten: {changed_reason}")
+        print(f"  witness ensured (HOLD/REFUSE):  {changed_witness}")
+    else:
+        print(out_text, end="")
+
+if __name__ == "__main__":
+    main()
