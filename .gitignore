@@ -24,3 +24,6 @@ pack_current
 
 # backups
 *.bak.*
+
+# backups
+*.bak.*

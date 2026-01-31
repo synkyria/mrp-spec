@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use MRP v1.0, please cite this repository/release."
+title: "MRP v1.0 — Minimum Review Pack: Spec & Tools"
+type: software
+authors:
+  - family-names: Kalomoirakis
+    given-names: Panagiotis
+license: Apache-2.0
+repository-code: "git@github.com:Synkyrian-Lab/mrp-spec.git"
