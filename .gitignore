@@ -9,3 +9,9 @@ __MACOSX/
 # generated outputs
 outputs/
 **/outputs/
+
+# local scratch (not part of repo)
+pack_current/
+packs/
+MRP_spec_source_v1.0.zip
+MRP_spec_source_v1.0.zip.sha256
