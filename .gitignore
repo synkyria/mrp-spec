@@ -1,29 +1,11 @@
-# OS noise
+# macOS
 .DS_Store
+__MACOSX/
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# Evidence packs (keep out of git)
-packs/
-pack_current
-
-# Large artifacts / zips
+# release artifacts
 *.zip
 *.zip.sha256
 
-# Temp
-*.bak
-
-# backups
-*.bak
-*.bak.*
-
-# backups
-*.bak.*
-
-# backups
-*.bak.*
+# generated outputs
+outputs/
+**/outputs/
